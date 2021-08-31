@@ -9,4 +9,5 @@ leak:
 	valgrind ./$(FILENAME)
 clean:
 	rm $(FILENAME)
+	rm *.txt
 
