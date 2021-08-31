@@ -13,9 +13,7 @@
 #define INPUT_REDIRECT "<"
 #define ERR_REDIRECT "2>"
 #define PROMPT "swagshell> " // TODO: CHANGE
-#define DEBUG 1
-
-enum redirection_enum{INPUT,OUTPUT,ERR};
+#define DEBUG 0
 
 int main(){	
 	// Create Child Process
@@ -44,37 +42,39 @@ int main(){
 				exit(1);
 			}
 
-      // Redirection 
-      int file_redir[3] = {-1,-1,-1};
-      int file_redir_index = 0;
+      // Redirection, there can only be one of each => TODO: CHECK 
+      char * file_redir_names[3];
       int jump = 0;
       char * filename;
+      int input_redir = 0;
+      int output_redir = 0;
+      int err_redir = 0;
 
 			// Tokenize Strings
 			while(token != NULL){
         // STDOUT REDIRECTION
-        if(strcmp(token, OUTPUT_REDIRECT) == 0){
-
-          jump = 1;
-
-          file_redir[file_redir_index] = OUTPUT;
-          file_redir_index++;
-
+        if(strcmp(token, OUTPUT_REDIRECT) == 0){          
+          output_redir = 1;
           token = strtok(NULL," ");
           if(token != NULL){
-            filename = token;
+            file_redir_names[STDOUT_FILENO] = token;
           }
         }
         // STDIN REDIRECTION
         else if(strcmp(token, INPUT_REDIRECT) == 0){
-          file_redir[file_redir_index] = INPUT;
-          file_redir_index++;
-        
+          input_redir = 1; 
+          token = strtok(NULL, " ");
+          if(token != NULL){
+            file_redir_names[STDIN_FILENO] = token;
+          }
         }
         // STDERR REDIRECTION
         else if(strcmp(token, ERR_REDIRECT) == 0){
-          file_redir[file_redir_index] = ERR;
-          file_redir_index++;
+          err_redir = 1;
+          token = strtok(NULL, " ");
+          if(token != NULL){
+            file_redir_names[STDERR_FILENO] = token;
+          }
         }
         else{
           cmd[i] = malloc(sizeof(char) *strlen(token) + 1);
@@ -82,6 +82,7 @@ int main(){
         }
         token = strtok(NULL," ");
 			}	
+      // Null Terminate Arg array
       cmd[i] = NULL;
     
       if(DEBUG){
@@ -91,21 +92,31 @@ int main(){
         printf("\n"); 
       }
       if(DEBUG){
-        for(int j = 0; j<3; j++){
-          printf("%d ", file_redir[j]);
-        }
-        printf("\n");
+        printf("%d\n", STDOUT_FILENO);
       }
 
 			// Create new process, execute command
 			pid_t forked = fork();
 			if(forked == 0){
-        if(jump){
-          // Open redirected source in child
-          close(STDOUT_FILENO);
-          open(filename, O_CREAT|O_WRONLY|O_TRUNC, S_IRWXU);
+        // Check File Redirects
+        if(input_redir){
+          int redirect_fd = open(file_redir_names[STDIN_FILENO], O_RDONLY);
+          dup2(redirect_fd, STDIN_FILENO);
+          close(redirect_fd);
+        }
+        if(output_redir){
+          int redirect_fd = open(file_redir_names[STDOUT_FILENO], O_CREAT|O_WRONLY|O_TRUNC, S_IRWXU);
+          dup2(redirect_fd, STDOUT_FILENO);
+          close(redirect_fd);
+        }
+        if(err_redir){
+          int redirect_fd = open(file_redir_names[STDERR_FILENO], O_CREAT|O_WRONLY|O_TRUNC, S_IRWXU);
+          dup2(redirect_fd, STDERR_FILENO);
         }
 				execvp(cmd[0], cmd);
+        
+        // Writes invalid cmd to stderr
+        perror(cmd[0]);
 			}
 
 			// Free  
