@@ -12,8 +12,84 @@
 #define OUTPUT_REDIRECT ">"
 #define INPUT_REDIRECT "<"
 #define ERR_REDIRECT "2>"
+#define ONE_SPACE " "
+#define ZERO 0
 #define PROMPT "swagshell> " // TODO: CHANGE
 #define DEBUG 0
+
+
+typedef struct process{
+  char ** argv;
+  char * input_redir_file;
+  char * output_redir_file;
+  char * err_redir_file;
+  char * token;
+  int iarg;
+} Process;
+
+// TODO: return statement can determine error
+void parse_command(Process * process, char ** argv){
+  char * token = process->token;
+  // Tokenize Strings
+  while(token != NULL){
+    // STDOUT 
+    if(strcmp(token, OUTPUT_REDIRECT) == ZERO){          
+      token = strtok(NULL, ONE_SPACE);
+      if(token != NULL){
+        process->output_redir_file = token;
+      }
+    }
+    // STDIN 
+    else if(strcmp(token, INPUT_REDIRECT) == ZERO){
+      token = strtok(NULL, ONE_SPACE);
+      if(token != NULL){
+        process->input_redir_file = token;
+      }
+    }
+    // STDERR 
+    else if(strcmp(token, ERR_REDIRECT) == ZERO){
+      token = strtok(NULL, ONE_SPACE);
+      if(token != NULL){
+        process->err_redir_file = token;
+      }
+    }
+    else{
+      argv[process->iarg] = malloc(sizeof(char) *strlen(token) + 1);
+      strcpy(argv[process->iarg++],token);
+    }
+    token = strtok(NULL, ONE_SPACE);
+  }	
+  // Null Terminate arg array
+  argv[process->iarg] = NULL; 
+}
+void execute_command(Process * c_redir, char** argv){
+  // Create new process, execute command
+  pid_t forked = fork();
+  if(forked == ZERO){
+    char * cmd = argv[0];
+    // Check File Redirects
+    if(c_redir->input_redir_file != NULL){
+      int redirect_fd = open(c_redir->input_redir_file, O_RDONLY);
+      dup2(redirect_fd, STDIN_FILENO);
+      close(redirect_fd);
+    }
+    if(c_redir->output_redir_file != NULL){
+      int redirect_fd = open(c_redir->output_redir_file, O_CREAT|O_WRONLY|O_TRUNC, S_IRWXU);
+      dup2(redirect_fd, STDOUT_FILENO);
+      close(redirect_fd);
+    }
+    if(c_redir->err_redir_file != NULL){
+      int redirect_fd = open(c_redir->err_redir_file, O_CREAT|O_WRONLY|O_TRUNC, S_IRWXU);
+      dup2(redirect_fd, STDERR_FILENO);
+    }
+
+    execvp(cmd, argv);
+
+    // Writes invalid cmd to stderr
+    perror(cmd);
+    exit(1); // Exit out if execvp failed
+  }
+}
 
 int main(){	
 	// Create Child Process
@@ -24,106 +100,33 @@ int main(){
 		exit(1);
 	}
   // Initial Parent
-	else if(cPid > 0){}
+	else if(cPid > ZERO){}
 	else{
 		while(1){
 			char * line = readline(PROMPT);
 			char * dup = strdup(line);
-			char * token = strtok(dup," ");
+			char * token = strtok(dup, ONE_SPACE);
 
 			// Command Parsing
-			char * cmd[10];
-			int i = 0;
+			char * argv[10];
 
 			// Todo: modify exit condition, free unused blocks
-			if(strcmp(line, "exit") == 0){
+			if(strcmp(line, "exit") == ZERO){
 				free(line);
 				free(dup);
 				exit(1);
 			}
 
       // Redirection, there can only be one of each => TODO: CHECK 
-      char * file_redir_names[3];
-      int jump = 0;
-      char * filename;
-      int input_redir = 0;
-      int output_redir = 0;
-      int err_redir = 0;
-
-			// Tokenize Strings
-			while(token != NULL){
-        // STDOUT REDIRECTION
-        if(strcmp(token, OUTPUT_REDIRECT) == 0){          
-          output_redir = 1;
-          token = strtok(NULL," ");
-          if(token != NULL){
-            file_redir_names[STDOUT_FILENO] = token;
-          }
-        }
-        // STDIN REDIRECTION
-        else if(strcmp(token, INPUT_REDIRECT) == 0){
-          input_redir = 1; 
-          token = strtok(NULL, " ");
-          if(token != NULL){
-            file_redir_names[STDIN_FILENO] = token;
-          }
-        }
-        // STDERR REDIRECTION
-        else if(strcmp(token, ERR_REDIRECT) == 0){
-          err_redir = 1;
-          token = strtok(NULL, " ");
-          if(token != NULL){
-            file_redir_names[STDERR_FILENO] = token;
-          }
-        }
-        else{
-          cmd[i] = malloc(sizeof(char) *strlen(token) + 1);
-          strcpy(cmd[i++],token);
-        }
-        token = strtok(NULL," ");
-			}	
-      // Null Terminate Arg array
-      cmd[i] = NULL;
-    
-      if(DEBUG){
-        for(int j = 0; j< i; j++){
-          printf("%s ",cmd[j]);
-        }
-        printf("\n"); 
-      }
-      if(DEBUG){
-        printf("%d\n", STDOUT_FILENO);
-      }
-
-			// Create new process, execute command
-			pid_t forked = fork();
-			if(forked == 0){
-        // Check File Redirects
-        if(input_redir){
-          int redirect_fd = open(file_redir_names[STDIN_FILENO], O_RDONLY);
-          dup2(redirect_fd, STDIN_FILENO);
-          close(redirect_fd);
-        }
-        if(output_redir){
-          int redirect_fd = open(file_redir_names[STDOUT_FILENO], O_CREAT|O_WRONLY|O_TRUNC, S_IRWXU);
-          dup2(redirect_fd, STDOUT_FILENO);
-          close(redirect_fd);
-        }
-        if(err_redir){
-          int redirect_fd = open(file_redir_names[STDERR_FILENO], O_CREAT|O_WRONLY|O_TRUNC, S_IRWXU);
-          dup2(redirect_fd, STDERR_FILENO);
-        }
-				execvp(cmd[0], cmd);
-        
-        // Writes invalid cmd to stderr
-        perror(cmd[0]);
-			}
+      Process process = {argv,NULL,NULL,NULL,token,0};
+      parse_command(&process,process.argv);
+      execute_command(&process,process.argv);
 
 			// Free  
 			free(line);
 			free(dup);
-      for(int j = 0; j< i; j++){
-        free(cmd[j]);
+      for(int j = 0; j< process.iarg; j++){
+        free(argv[j]);
       }
 			wait(NULL);
 		}
