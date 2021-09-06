@@ -7,6 +7,8 @@
 #include <string.h>
 #include <fcntl.h>
 #include <sys/wait.h>
+#include <signal.h>
+#include <errno.h>
 
 // Macros
 #define OUTPUT_REDIRECT ">"
@@ -17,6 +19,7 @@
 #define PROMPT "swagshell> " // TODO: CHANGE
 #define ZERO 0
 #define DEBUG 0
+#define MAX_JOBS 20
 
 typedef struct process{
   char ** argv;
@@ -25,8 +28,8 @@ typedef struct process{
   char * err_redir_file;
   char * token;
   int iarg;
+  int fp;
 } Process;
-
 /**
  * Parse the command until the nearest pipe
  * Return 0 if pipe not encountered
@@ -66,6 +69,12 @@ int parse_command(Process * process, char ** argv){
       argv[process->iarg++] = NULL; // NULL Terminate the Array 
       return 1; // Pipe detected: GTFO
     }
+    // CUSTOM COMMAND FREE PROCESS 
+    else if(strcmp(token,"fp") == ZERO){      
+      process->fp = 1;
+      argv[process->iarg] = malloc(sizeof(char) *strlen(token) + 1);
+      strcpy(argv[process->iarg++],token);
+    }
     else{
       argv[process->iarg] = malloc(sizeof(char) *strlen(token) + 1);
       strcpy(argv[process->iarg++],token);
@@ -94,27 +103,60 @@ void check_redirects(Process * process){
   }
 }
 
-void execute_command(Process * process, char** argv){
+int execute_command(Process * process, char** argv){
   // Create new process, execute command
+  pid_t pid = getpid();
   pid_t forked = fork();
   if(forked == ZERO){
     char * cmd = argv[0];
+    // printf("SETTING PID OF CHILD: %d %d\n",getpid(), pid );
+    // if(setpgid(getpid(),pid) == -1){
+    //   printf("ERROR FOUND: %d\n", errno);
+    // }
+    // printf("Updated GPID of CHILD: %d \n", getpgid(pid));
+
+    // Child Process must be able to terminate
+    signal(SIGINT, SIG_DFL);
+    signal(SIGTSTP, SIG_DFL);
     
+    if(setpgid(0,0) == -1){
+      printf("Error occured when created proccess group: %d \n", errno );
+    }
+
+    // TODO: SET PGID as foreground process group
+    // tcsetpgrp(0,getpid());
     // Sets file descriptors for redirects
     check_redirects(process); 
-    execvp(cmd, argv);
+    if(process->fp){
+
+    }
+    else{
+      execvp(cmd, argv);
+    }
 
     // Writes invalid cmd to stderr
     if(process->err_redir_file != NULL){
       perror(cmd);
     }
     exit(1); // Exit out if execvp failed
+  }else{
+    if(DEBUG){
+      printf("Parent PID: %d\n", getpid());
+      printf("Parent GPID: %d\n", getpgid(getpid()));
+      printf("%d %d \n",forked, pid); 
+    }
+   // setpgid(forked, pid);
   }
+  return forked;
 }
 
-void execute_command_with_pipe(Process * l_process, Process * r_process, char ** largv, char ** rargv){
+int execute_command_with_pipe(Process * l_process, Process * r_process, char ** largv, char ** rargv){
   pid_t forked = fork();
   if(forked == ZERO){
+    // Commands can be interrupted
+    signal(SIGINT, SIG_DFL);
+    signal(SIGTSTP, SIG_DFL);
+
     char * l_cmd = largv[0];
     char * r_cmd = rargv[0];
 
@@ -146,16 +188,20 @@ void execute_command_with_pipe(Process * l_process, Process * r_process, char **
     // Close Pipe and Wait Until Child Processes Are Finished
     close(fd[0]);
     close(fd[1]);
-    waitpid(p1,NULL,0);
-    waitpid(p2,NULL,0);
+    waitpid(p1,NULL, 0);
+    waitpid(p2,NULL, 0 );
     
     // Support Error Redirection
     exit(1); // Exit out if execvp failed
   }
+  return forked;
 }
 
 int main(){	
 	// Create Child Process
+  signal(SIGINT, SIG_IGN);
+  signal(SIGTSTP, SIG_IGN);
+  
 	pid_t cPid = fork();
 
 	// The fork failed
@@ -184,7 +230,7 @@ int main(){
 			}
 
       // Redirection, there can only be one of each => TODO: CHECK 
-      Process process = {argv,NULL,NULL,NULL,token,0};
+      Process process = {argv,NULL,NULL,NULL,token,0,0};
       Process right_process;
       int pipe_exists = parse_command(&process,process.argv);
 
@@ -193,17 +239,27 @@ int main(){
         line_dup2 = strdup(line);
         token2 = strtok(line_dup2, PIPE);
         token2 = strtok(NULL,ONE_SPACE);
-        right_process = (Process) {rargv,NULL,NULL,NULL,token2,0}; 
+        right_process = (Process) {rargv,NULL,NULL,NULL,token2,0,0}; 
         parse_command(&right_process,right_process.argv); 
       }
-
+      
+      // PID of child allows you keep track of status later
+      int pid = 0;
       if(pipe_exists){
-        execute_command_with_pipe(&process, &right_process, process.argv, right_process.argv);
+        pid = execute_command_with_pipe(&process, &right_process, process.argv, right_process.argv);
       }
       else{
-        execute_command(&process,process.argv);
+        pid = execute_command(&process,process.argv);
       }
 
+      // Process Status
+      int stat;
+      waitpid(pid,&stat, WUNTRACED); // TODO: Check if WUNTRACED is sufficient
+      if(DEBUG){
+        printf("GPID of CHILD: %d\n", getpgid(pid));
+        printf("%d \n", WIFSTOPPED(stat));
+        printf("PID of Child: %d\n", pid);
+      }
 			// Free  
 			free(line);
 			free(line_dup);
@@ -216,10 +272,14 @@ int main(){
         } 
         free(line_dup2);
       }
-  		wait(NULL);
+      // printf("PID of CHILD: %d\n", pid);
+      // waitpid(pid,&stat, WUNTRACED);
+      // printf("%d \n", WIFSTOPPED(stat));
+      // printf("Exit Status: %d\n", WIFSTOPPED(stat));
 		}
 	}
-
+  // int stat;
+  // waitpid(cPid, &stat,WUNTRACED);
 	wait(NULL);
 	return 0;
 }
