@@ -111,6 +111,7 @@ void execute_command(Process * process, char** argv){
     exit(1); // Exit out if execvp failed
   }
 }
+
 void execute_command_with_pipe(Process * l_process, Process * r_process, char ** largv, char ** rargv){
   pid_t forked = fork();
   if(forked == ZERO){
