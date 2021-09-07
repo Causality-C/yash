@@ -21,6 +21,10 @@
 #define DEBUG 0
 #define MAX_JOBS 20
 
+// Global Variables
+int process_groups [MAX_JOBS];
+int pgindx = 0;
+
 typedef struct process{
   char ** argv;
   char * input_redir_file;
@@ -28,8 +32,12 @@ typedef struct process{
   char * err_redir_file;
   char * token;
   int iarg;
-  int fp;
+  int custom_command;
 } Process;
+
+// Custom Commands to implement
+enum commands{NONE, FG, BG,JOBS };
+
 /**
  * Parse the command until the nearest pipe
  * Return 0 if pipe not encountered
@@ -69,12 +77,24 @@ int parse_command(Process * process, char ** argv){
       argv[process->iarg++] = NULL; // NULL Terminate the Array 
       return 1; // Pipe detected: GTFO
     }
-    // CUSTOM COMMAND FREE PROCESS 
-    else if(strcmp(token,"fp") == ZERO){      
-      process->fp = 1;
+    // FG 
+    else if(strcmp(token,"fg") == ZERO){      
+      process->custom_command  = FG;
       argv[process->iarg] = malloc(sizeof(char) *strlen(token) + 1);
       strcpy(argv[process->iarg++],token);
-    }
+    } 
+    // BG
+    else if(strcmp(token,"bg") == ZERO){      
+      process->custom_command  = BG;
+      argv[process->iarg] = malloc(sizeof(char) *strlen(token) + 1);
+      strcpy(argv[process->iarg++],token);
+    } 
+    // JOBS
+    else if(strcmp(token,"jobs") == ZERO){      
+      process->custom_command  = JOBS;
+      argv[process->iarg] = malloc(sizeof(char) *strlen(token) + 1);
+      strcpy(argv[process->iarg++],token);
+    } 
     else{
       argv[process->iarg] = malloc(sizeof(char) *strlen(token) + 1);
       strcpy(argv[process->iarg++],token);
@@ -103,49 +123,61 @@ void check_redirects(Process * process){
   }
 }
 
+int execute_custom_command(Process *process){
+  // Super hacky way of doing the fg command
+  if(process->custom_command && pgindx != 0){
+    int custom_command = process->custom_command;
+    // Only list stuff out on the table if they exist
+    if(pgindx > 0){
+      switch(custom_command){
+        case FG:
+          pgindx--;
+          kill(-process_groups[pgindx], SIGCONT);
+          tcsetpgrp(0, process_groups[pgindx]);
+          return process_groups[pgindx];
+          break;
+        case BG:
+          pgindx--;
+          kill(-process_groups[pgindx], SIGCONT);
+          break;
+        case JOBS:
+          break;
+        default:
+          break;
+      }
+    }  
+  }
+  return -1;
+}
 int execute_command(Process * process, char** argv){
   // Create new process, execute command
   pid_t pid = getpid();
   pid_t forked = fork();
   if(forked == ZERO){
     char * cmd = argv[0];
-    // printf("SETTING PID OF CHILD: %d %d\n",getpid(), pid );
-    // if(setpgid(getpid(),pid) == -1){
-    //   printf("ERROR FOUND: %d\n", errno);
-    // }
-    // printf("Updated GPID of CHILD: %d \n", getpgid(pid));
 
-    // Child Process must be able to terminate
+    // Child Process must be able to terminate, cannot inherit dispositions => signal mask 
     signal(SIGINT, SIG_DFL);
     signal(SIGTSTP, SIG_DFL);
-    
+    signal(SIGTTOU, SIG_IGN);
+
+    // Creates a new process group
     if(setpgid(0,0) == -1){
       printf("Error occured when created proccess group: %d \n", errno );
     }
 
-    // TODO: SET PGID as foreground process group
-    // tcsetpgrp(0,getpid());
+    // Prevent Race Conditions, set PID as foreground process group
+    tcsetpgrp(0,getpid());
+
     // Sets file descriptors for redirects
     check_redirects(process); 
-    if(process->fp){
-
-    }
-    else{
-      execvp(cmd, argv);
-    }
+    execvp(cmd,argv);
 
     // Writes invalid cmd to stderr
     if(process->err_redir_file != NULL){
       perror(cmd);
     }
     exit(1); // Exit out if execvp failed
-  }else{
-    if(DEBUG){
-      printf("Parent PID: %d\n", getpid());
-      printf("Parent GPID: %d\n", getpgid(getpid()));
-      printf("%d %d \n",forked, pid); 
-    }
-   // setpgid(forked, pid);
   }
   return forked;
 }
@@ -164,6 +196,11 @@ int execute_command_with_pipe(Process * l_process, Process * r_process, char ** 
     if(pipe(fd) == -1){
       exit(1);
     }
+    // Creates a new process group
+    if(setpgid(0,0) == -1){
+      printf("Error occured when created proccess group: %d \n", errno );
+    }
+    tcsetpgrp(0,getpid());
 
     // Left Side
     int p1 = fork();
@@ -197,89 +234,80 @@ int execute_command_with_pipe(Process * l_process, Process * r_process, char ** 
   return forked;
 }
 
+
 int main(){	
 	// Create Child Process
   signal(SIGINT, SIG_IGN);
   signal(SIGTSTP, SIG_IGN);
+  signal(SIGTTOU, SIG_IGN);
   
-	pid_t cPid = fork();
+  while(1){
+    char * line = readline(PROMPT);
+    char * line_dup = strdup(line);
+    char * token = strtok(line_dup, ONE_SPACE);
+    char * line_dup2;
+    char * token2;
 
-	// The fork failed
-	if(cPid == -1){
-		exit(1);
-	}
-  // Initial Parent
-	else if(cPid > ZERO){}
-	else{
-		while(1){
-			char * line = readline(PROMPT);
-			char * line_dup = strdup(line);
-			char * token = strtok(line_dup, ONE_SPACE);
-      char * line_dup2;
-      char * token2;
+    // Command Parsing
+    char * argv[10];
+    char * rargv[10];
 
-			// Command Parsing
-			char * argv[10];
-      char * rargv[10];
+    // Todo: modify exit condition, free unused blocks
+    if(strcmp(line, "exit") == ZERO){
+      free(line);
+      free(line_dup);
+      exit(1);
+    }
 
-			// Todo: modify exit condition, free unused blocks
-			if(strcmp(line, "exit") == ZERO){
-				free(line);
-				free(line_dup);
-				exit(1);
-			}
+    // Redirection, there can only be one of each => TODO: CHECK 
+    Process process = {argv,NULL,NULL,NULL,token,0,0};
+    Process right_process;
+    int pipe_exists = parse_command(&process,process.argv);
 
-      // Redirection, there can only be one of each => TODO: CHECK 
-      Process process = {argv,NULL,NULL,NULL,token,0,0};
-      Process right_process;
-      int pipe_exists = parse_command(&process,process.argv);
+    if(pipe_exists){
+      // Create a new argument array
+      line_dup2 = strdup(line);
+      token2 = strtok(line_dup2, PIPE);
+      token2 = strtok(NULL,ONE_SPACE);
+      right_process = (Process) {rargv,NULL,NULL,NULL,token2,0,0}; 
+      parse_command(&right_process,right_process.argv); 
+    }
+    
+    // PID of child allows you keep track of process group created
+    int pid = 0;
+    if(pipe_exists){
+      pid = execute_command_with_pipe(&process, &right_process, process.argv, right_process.argv);
+    }
+    // Custom Commands for : BG, JOBS, FG
+    else if(process.custom_command){
+      pid = execute_custom_command(&process);
+    }
+    else{
+      pid = execute_command(&process,process.argv);
+    }
 
-      if(pipe_exists){
-        // Create a new argument array
-        line_dup2 = strdup(line);
-        token2 = strtok(line_dup2, PIPE);
-        token2 = strtok(NULL,ONE_SPACE);
-        right_process = (Process) {rargv,NULL,NULL,NULL,token2,0,0}; 
-        parse_command(&right_process,right_process.argv); 
-      }
-      
-      // PID of child allows you keep track of status later
-      int pid = 0;
-      if(pipe_exists){
-        pid = execute_command_with_pipe(&process, &right_process, process.argv, right_process.argv);
-      }
-      else{
-        pid = execute_command(&process,process.argv);
-      }
-
-      // Process Status
-      int stat;
+    // Process Status
+    int stat;
+    // If PID is -1, we're not waiting for anything 
+    if (pid != -1){
       waitpid(pid,&stat, WUNTRACED); // TODO: Check if WUNTRACED is sufficient
-      if(DEBUG){
-        printf("GPID of CHILD: %d\n", getpgid(pid));
-        printf("%d \n", WIFSTOPPED(stat));
-        printf("PID of Child: %d\n", pid);
+      // If interrupted, then add process group/job onto stack
+      if(WIFSTOPPED(stat) && pgindx < MAX_JOBS){
+        process_groups[pgindx++] = pid;
       }
-			// Free  
-			free(line);
-			free(line_dup);
-      for(int j = 0; j< process.iarg; j++){
-        free(argv[j]);
-      }
-      if(pipe_exists){
-        for(int j = 0; j< right_process.iarg; j++){
-          free(rargv[j]);
-        } 
-        free(line_dup2);
-      }
-      // printf("PID of CHILD: %d\n", pid);
-      // waitpid(pid,&stat, WUNTRACED);
-      // printf("%d \n", WIFSTOPPED(stat));
-      // printf("Exit Status: %d\n", WIFSTOPPED(stat));
-		}
-	}
-  // int stat;
-  // waitpid(cPid, &stat,WUNTRACED);
-	wait(NULL);
-	return 0;
+      tcsetpgrp(0,getpgid(0));
+    }
+    // Free  
+    free(line);
+    free(line_dup);
+    for(int j = 0; j< process.iarg; j++){
+      free(argv[j]);
+    }
+    if(pipe_exists){
+      for(int j = 0; j< right_process.iarg; j++){
+        free(rargv[j]);
+      } 
+      free(line_dup2);
+    }
+  }
 }
