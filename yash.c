@@ -18,7 +18,7 @@
 #define PIPE "|"
 #define PLUS "+"
 #define MINUS "-"
-#define PROMPT "swagshell> " // TODO: CHANGE
+#define PROMPT "# " // TODO: CHANGE
 #define ZERO 0
 #define DEBUG 0
 #define MAX_JOBS 20
@@ -391,6 +391,15 @@ int main(){
   
   while(1){
     char * line = readline(PROMPT);
+    // Reached EOF 
+    if(line == NULL){
+      free(line);
+      for(int i = 0; i< jtindx; i++){
+        free(job_table[i]->command);
+        free(job_table[i]);
+      }
+      exit(0);
+    }
     char * line_dup = strdup(line);
     char * token = strtok(line_dup, ONE_SPACE);
     char * line_dup2;
