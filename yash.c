@@ -504,13 +504,6 @@ int main(){
     char * argv[MAX_ARGS];
     char * rargv[MAX_ARGS];
 
-    // Todo: modify exit condition, free unused blocks
-    if(strcmp(line, "exit") == ZERO){
-      free(line);
-      free(line_dup);
-      exit(1);
-    }
-
     // Redirection, there can only be one of each => TODO: CHECK 
     Job * curr_job = (Job*) malloc(sizeof(Job));
     curr_job->command = line;
