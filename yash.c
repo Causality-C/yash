@@ -19,9 +19,11 @@
 #define PLUS "+"
 #define MINUS "-"
 #define PROMPT "# " // TODO: CHANGE
+#define AMPERSAND "&"
 #define ZERO 0
 #define DEBUG 0
 #define MAX_JOBS 20
+#define MAX_ARGS 100
 
 // Custom Commands to implement
 enum custom_commands{NONE,FG,BG,JOBS};
@@ -50,7 +52,7 @@ typedef struct job{
 
 // Define all Functions: TODO
 int parse_command(Process * process, char ** argv);
-void check_redirects(Process * process);
+int check_redirects(Process * process);
 void handle_done_jobs();
 int execute_custom_command(Job * job);
 int execute_command(Job * job, char ** argv);
@@ -76,6 +78,10 @@ int parse_command(Process * process, char ** argv){
   while(token != NULL){
     // STDOUT 
     if(strcmp(token, OUTPUT_REDIRECT) == ZERO){          
+      // Symbols cannot be found on the first parse
+      if(!process->iarg){
+        return -1;
+      }
       token = strtok(NULL, ONE_SPACE);
       if(token != NULL){
         process->output_redir_file = token;
@@ -83,6 +89,10 @@ int parse_command(Process * process, char ** argv){
     }
     // STDIN 
     else if(strcmp(token, INPUT_REDIRECT) == ZERO){
+      // Symbols cannot be found on the first parse
+      if(!process->iarg){
+        return -1;
+      }
       token = strtok(NULL, ONE_SPACE);
       if(token != NULL){
         process->input_redir_file = token;
@@ -90,6 +100,10 @@ int parse_command(Process * process, char ** argv){
     }
     // STDERR 
     else if(strcmp(token, ERR_REDIRECT) == ZERO){
+      // Symbols cannot be found on the first parse
+      if(!process->iarg){
+        return -1;
+      }
       token = strtok(NULL, ONE_SPACE);
       if(token != NULL){
         process->err_redir_file = token;
@@ -97,6 +111,10 @@ int parse_command(Process * process, char ** argv){
     }
     // Pipe
     else if(strcmp(token, PIPE) == ZERO){
+      // Symbols cannot be found on the first parse
+      if(!process->iarg){
+        return -1;
+      }
       argv[process->iarg++] = NULL; // NULL Terminate the Array 
       return PIPE_FOUND; // Pipe detected: GTFO
     }
@@ -120,6 +138,10 @@ int parse_command(Process * process, char ** argv){
     } 
     // Ampersand -> send job to background
     else if(strcmp(token,"&") == ZERO){
+      // Symbols cannot be found on the first parse
+      if(!process->iarg){
+        return -1;
+      }
       argv[process->iarg++] = NULL;
       return AMPERSAND_FOUND;
     }
@@ -141,21 +163,44 @@ int parse_command(Process * process, char ** argv){
  * - Output Redirection
  * - Error Redirection
  * */
-void check_redirects(Process * process){
+int check_redirects(Process * process){
+  int err_status = 0;
   if(process->input_redir_file != NULL){
     int redirect_fd = open(process->input_redir_file, O_RDONLY);
-    dup2(redirect_fd, STDIN_FILENO);
-    close(redirect_fd);
-  }
+    err_status = (err_status > redirect_fd) ? redirect_fd: err_status; 
+
+    if(err_status != -1){
+     dup2(redirect_fd, STDIN_FILENO);
+     close(redirect_fd); 
+    }
+ }
   if(process->output_redir_file != NULL){
     int redirect_fd = open(process->output_redir_file, O_CREAT|O_WRONLY|O_TRUNC, S_IRWXU);
-    dup2(redirect_fd, STDOUT_FILENO);
-    close(redirect_fd);
+    err_status = (err_status > redirect_fd) ? redirect_fd: err_status; 
+
+    if(err_status != -1){
+      dup2(redirect_fd, STDOUT_FILENO);
+      close(redirect_fd);
+    }
   }
   if(process->err_redir_file != NULL){
     int redirect_fd = open(process->err_redir_file, O_CREAT|O_WRONLY|O_TRUNC, S_IRWXU);
-    dup2(redirect_fd, STDERR_FILENO);
+    err_status = (err_status > redirect_fd) ? redirect_fd: err_status; 
+
+    if(err_status != -1){
+      dup2(redirect_fd, STDERR_FILENO);
+    }
   }
+  if(err_status == -1){
+    // Reset all File Descriptors if error occured
+    dup2(STDIN_FILENO, STDIN_FILENO);
+    dup2(STDOUT_FILENO, STDOUT_FILENO);
+    dup2(STDERR_FILENO, STDERR_FILENO);
+
+    perror("Error");
+    return -1;
+  }
+  return 1;
 }
 
 
@@ -175,7 +220,7 @@ void handle_done_jobs(){
     // Set the last_done_job index
     if(status == DONE){
       free_start_index = (free_start_index == -1) ? i: free_start_index;
-      printf("[%d] %s Done                  %s\n", job->id, identifier,job->command);
+      printf("[%d]%s Done                  %s\n", job->id, identifier,job->command);
       job->status = TERMINATED;
     }
     else{
@@ -192,6 +237,43 @@ void handle_done_jobs(){
   }
 }
 
+/**
+ * op: foreground or background => remove & or append & 
+ * Returns updated string
+ * */
+char * handle_str_ops(int op, char * curr_command){
+  char * updated;
+  size_t len = strlen(curr_command);
+
+  if(op){
+    char ampersand [2] = " &";
+    size_t len2 = strlen(ampersand);
+
+    updated = malloc(len + 3 * sizeof(char));
+    if(updated){
+      strcpy(updated,curr_command);
+      strcat(updated,ampersand);
+    }
+
+    // Free Updated Command
+    free(curr_command);
+  }
+  else{
+    if(curr_command[len - 1] == '&'){
+      updated = malloc(len - 1 * sizeof(char));
+      int i = 0;
+      for(i; i< len - 2; i++ ){
+        updated[i] = curr_command[i];
+      }
+      updated[i] = '\0';
+      free(curr_command);
+    }
+    else{
+      updated = curr_command;
+    } 
+  }
+  return updated;
+}
 /**
  * Executes a custom command (jobs, bg, fg) 
  * Returns ...
@@ -210,18 +292,29 @@ int execute_custom_command(Job * job){
       switch(custom_command){
         case FG:
           jtindx--;
+
+          char * curr_command = job_table[jtindx]->command;
+          char * updated = handle_str_ops(0,curr_command);
+          job_table[jtindx]->command = updated;
+          
+          // Print the foreground job
+          printf("%s\n", job_table[jtindx]->command);
           kill(-job_table[jtindx]->pgrp,SIGCONT);
           job_table[jtindx]->status = RUNNING;
           tcsetpgrp(ZERO, job_table[jtindx]->pgrp);
+
           return job_table[jtindx]->pgrp;
           break;
         case BG: 
           // Prevent Segfault, find the nearest process
-          next_bg_job = jtindx-1;
+          next_bg_job = jtindx - 1;
           while(next_bg_job >= ZERO && job_table[next_bg_job]->status == RUNNING){
             next_bg_job--;
           }
           if(next_bg_job != -1){
+            char * curr_command = job_table[next_bg_job]->command;
+            char * updated = handle_str_ops(1, curr_command);
+            job_table[next_bg_job]->command = updated;
             kill(-job_table[next_bg_job]->pgrp,SIGCONT);
             job_table[next_bg_job]->status = RUNNING; 
           }
@@ -249,7 +342,6 @@ int execute_command(Job * job, char** argv){
   if(forked == ZERO){
     // Empty Input Edge Case
     char * cmd = process->iarg == 0 ? "": argv[0];
-
     // Child Process must be able to terminate, cannot inherit dispositions => signal mask 
     signal(SIGINT, SIG_DFL);
     signal(SIGTSTP, SIG_DFL);
@@ -265,9 +357,10 @@ int execute_command(Job * job, char** argv){
       tcsetpgrp(0,getpid());
     }
 
-    // Sets file descriptors for redirects
-    check_redirects(process); 
-    execvp(cmd,argv);
+    // Sets file descriptors for redirects and executes if all files are valid
+    if(check_redirects(process) != -1){
+      execvp(cmd,argv);
+    }
 
     // Writes invalid cmd to stderr
     if(process->err_redir_file != NULL){
@@ -314,8 +407,9 @@ int execute_command_with_pipe(Job* job){
       dup2(fd[1], STDOUT_FILENO);
       close(fd[0]);
       close(fd[1]);
-      check_redirects(l_process);
-      execvp(l_cmd, largv);
+      if(check_redirects(l_process) != -1){
+       execvp(l_cmd,largv);
+      }
     }
 
     // Right Side
@@ -324,8 +418,9 @@ int execute_command_with_pipe(Job* job){
       dup2(fd[0], STDIN_FILENO);
       close(fd[0]);
       close(fd[1]);
-      check_redirects(r_process);
-      execvp(r_cmd, rargv);
+      if(check_redirects(r_process) != -1){
+        execvp(r_cmd,rargv);
+      }
     }
 
     // Close Pipe and Wait Until Child Processes Are Finished
@@ -364,10 +459,10 @@ void print_job_table(){
     int status = job->status;
     switch(status){
       case RUNNING:
-        printf("[%d] %s Running              %s\n", job->id, identifier,job->command);
+        printf("[%d]%s Running              %s\n", job->id, identifier,job->command);
         break;
       case STOPPED:
-        printf("[%d] %s Stopped              %s\n", job->id, identifier,job->command);
+        printf("[%d]%s Stopped              %s\n", job->id, identifier,job->command);
         break; 
       default:
         break;
@@ -406,8 +501,8 @@ int main(){
     char * token2;
 
     // Command Parsing
-    char * argv[10];
-    char * rargv[10];
+    char * argv[MAX_ARGS];
+    char * rargv[MAX_ARGS];
 
     // Todo: modify exit condition, free unused blocks
     if(strcmp(line, "exit") == ZERO){
@@ -426,92 +521,103 @@ int main(){
 
     // Parse Status
     int parse_status = parse_command(&process,process.argv);
-    curr_job->lprocess = &process;
+    
+    // If first parsed value is not a symbol
+    if(parse_status != -1){
+      curr_job->lprocess = &process;
 
-    int pipe_exists = parse_status == PIPE_FOUND;
-    int bg_exists = parse_status == AMPERSAND_FOUND;
+      int pipe_exists = parse_status == PIPE_FOUND;
+      int bg_exists = parse_status == AMPERSAND_FOUND;
 
-    if(pipe_exists){
-      // Create a new argument array
-      line_dup2 = strdup(line);
-      token2 = strtok(line_dup2, PIPE);
-      token2 = strtok(NULL,ONE_SPACE);
-      right_process = (Process) {rargv,NULL,NULL,NULL,token2,0,0,0}; 
+      if(pipe_exists){
+        // Create a new argument array
+        line_dup2 = strdup(line);
+        token2 = strtok(line_dup2, PIPE);
+        token2 = strtok(NULL,ONE_SPACE);
+        right_process = (Process) {rargv,NULL,NULL,NULL,token2,0,0,0}; 
 
-      parse_status = parse_command(&right_process,right_process.argv); 
-      curr_job->rprocess = &right_process;
-      bg_exists = parse_status == AMPERSAND_FOUND;
-    }
-
-    if(bg_exists){
-      process.background = 1;
-    }
-
-    // PID of child allows you keep track of process group created
-    int pid = 0;
-
-    // Must be called before fork : prints out all done jobs
-    handle_done_jobs();
-
-    if(pipe_exists){
-      pid = execute_command_with_pipe(curr_job);
-    }
-    // Custom Commands for : BG, JOBS, FG
-    else if(process.custom_command){
-      pid = execute_custom_command(curr_job);
-    }
-    else{
-      pid = execute_command(curr_job, process.argv);
-    }
-
-    // Set Job Values
-    curr_job->pgrp = pid;
-    curr_job->status = RUNNING;
-
-    // Process Status
-    int stat;
-    int background_status = (pipe_exists) ? !(process.background || right_process.background): !process.background;
-    // If process runs in the background, we don't want to wait, 
-    if (background_status && pid >= 1){
-
-      waitpid(pid, &stat, WUNTRACED); // Blocking wait
-
-      // If interrupted, then add process group/job onto stack
-      if(WIFSTOPPED(stat) && jtindx < MAX_JOBS){
-        // FG Process must be checked 
-        if(strcmp(line,"fg") == ZERO){
-          curr_job->command = job_table[jtindx]->command;
-        }
-        curr_job->id = jtindx + 1;
-        curr_job->status = STOPPED;
-        job_table[jtindx++] = curr_job;
+        parse_status = parse_command(&right_process,right_process.argv); 
+        curr_job->rprocess = &right_process;
+        bg_exists = parse_status == AMPERSAND_FOUND;
       }
 
-      // Deallocate the Job and free everything if not interrupted
+      if(bg_exists){
+        process.background = 1;
+      }
+
+      // PID of child allows you keep track of process group created
+      int pid = 0;
+
+      // Must be called before fork : prints out all done jobs
+      handle_done_jobs();
+
+      if(pipe_exists){
+        pid = execute_command_with_pipe(curr_job);
+      }
+      // Custom Commands for : BG, JOBS, FG
+      else if(process.custom_command){
+        pid = execute_custom_command(curr_job);
+      }
       else{
+        pid = execute_command(curr_job, process.argv);
+      }
+
+      // Set Job Values
+      curr_job->pgrp = pid;
+      curr_job->status = RUNNING;
+
+      // Process Status
+      int stat;
+      int background_status = (pipe_exists) ? !(process.background || right_process.background): !process.background;
+      // If process runs in the background, we don't want to wait, 
+      if (background_status && pid >= 1){
+
+        waitpid(pid, &stat, WUNTRACED); // Blocking wait
+
+        // If interrupted, then add process group/job onto stack
+        if(WIFSTOPPED(stat) && jtindx < MAX_JOBS){
+          // FG Process must be checked 
+          if(strcmp(line,"fg") == ZERO){
+            free(curr_job->command);
+            curr_job->command = job_table[jtindx]->command;
+            free(job_table[jtindx]);
+          }
+          curr_job->id = jtindx + 1;
+          curr_job->status = STOPPED;
+          job_table[jtindx++] = curr_job;
+        }
+
+        // Deallocate the Job and free everything if not interrupted
+        else{
+          free(curr_job->command);
+          free(curr_job);
+        }
+
+        stat = 0; // Apparently, stat keeps its value so we have to reset it
+
+        // Return Control to the terminal 
+        tcsetpgrp(0,getpgid(0));
+      }
+      else if (process.background){
+        curr_job->id = jtindx + 1;
+        job_table[jtindx++] = curr_job;
+      }
+      // Custom Command
+      else if(pid < 1){
         free(curr_job->command);
         free(curr_job);
       }
 
-      stat = 0; // Apparently, stat keeps its value so we have to reset it
-
-      // Return Control to the terminal 
-      tcsetpgrp(0,getpgid(0));
+      // Free  
+      free_process(&process,line_dup);
+      if(pipe_exists){
+        free_process(&right_process,line_dup2);
+      }
     }
-    else if (process.background){
-      curr_job->id = jtindx + 1;
-      job_table[jtindx++] = curr_job;
-    }
-    // Custom Command
-    else if(pid < 1){
+    else{
+      free_process(&process,line_dup);
       free(curr_job->command);
       free(curr_job);
-    }
-
-    // Free  
-    free_process(&process,line_dup);
-    if(pipe_exists){
-      free_process(&right_process,line_dup2);
     }
   }
 }
